@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OCR PDF</title>
+    <!-- Load pdf.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <!-- Load tesseract.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+</head>
+<body>
+    <h1>OCR Progress</h1>
+    <div id="status">Loading...</div>
+    <div id="progress"></div>
+    <textarea id="result" style="width: 100%; height: 500px;"></textarea>
+
+    <script>
+        // Setup pdf.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        async function processPDF() {
+            const statusEl = document.getElementById('status');
+            const progressEl = document.getElementById('progress');
+            const resultEl = document.getElementById('result');
+
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const pdfUrl = urlParams.get('pdf');
+                
+                if (!pdfUrl) {
+                    statusEl.textContent = 'Error: No PDF URL provided';
+                    return;
+                }
+
+                statusEl.textContent = 'Loading PDF...';
+                // Fetch the PDF
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                const pdf = await loadingTask.promise;
+                
+                const numPages = pdf.numPages;
+                statusEl.textContent = `PDF loaded. Total pages: ${numPages}`;
+                
+                // Initialize Tesseract worker
+                statusEl.textContent = 'Initializing OCR worker...';
+                const worker = await Tesseract.createWorker({
+                    logger: m => console.log(m)
+                });
+                // Load Chinese Simplified + English
+                await worker.loadLanguage('chi_sim+eng');
+                await worker.initialize('chi_sim+eng');
+                
+                let fullText = '';
+
+                // Create a canvas to render pages
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                for (let i = 1; i <= numPages; i++) {
+                    progressEl.textContent = `Rendering page ${i}/${numPages}...`;
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 1.2 });
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    
+                    const renderContext = {
+                        canvasContext: ctx,
+                        viewport: viewport
+                    };
+                    
+                    await page.render(renderContext).promise;
+                    
+                    progressEl.textContent = `OCR page ${i}/${numPages}...`;
+                    const imgData = canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    const { data: { text } } = await worker.recognize(imgData);
+                    fullText += `\n\n--- Page ${i} ---\n\n` + text;
+                    resultEl.value = `Progress: ${i}/${numPages}\n` + text.substring(0, 100) + '...';
+                }
+                
+                await worker.terminate();
+                statusEl.textContent = 'OCR Completed! Saving...';
+                progressEl.textContent = 'Done.';
+
+                // Save to server
+                const filename = decodeURIComponent(pdfUrl).split('/').pop() + '.txt';
+                await fetch('/save-ocr', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename, text: fullText })
+                });
+
+                statusEl.textContent = 'OCR Completed and Saved!';
+                
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = 'Error: ' + err.message;
+            }
+        }
+
+        processPDF();
+    </script>
+</body>
+</html>
